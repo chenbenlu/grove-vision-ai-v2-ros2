@@ -1,105 +1,182 @@
-# 🚗 Control Lab — 自走小車視覺感知系統
+# Grove Vision AI V2 — ROS 2 Perception Package
 
-本套件負責讀取 Grove Vision AI V2 模組的影像辨識結果，轉換成 ROS 2 訊息發布到 `/perception/road_signs`，供下游的自走小車決策系統訂閱使用。
+<!-- 徽章區（CI / 版本 / 授權 等可日後補上） -->
+![ROS 2 Humble](https://img.shields.io/badge/ROS%202-Humble-blue)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![Platform](https://img.shields.io/badge/platform-amd64%20%7C%20arm64-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+ROS 2 (Humble) 套件，將 Grove Vision AI V2 (Himax WE2 + SenseCraft AI 韌體) 透過 USB-CDC 取得的 SSCMA 偵測結果，解析後以 `vision_perception/msg/VisionAI` 訊息發布於 `/perception/road_signs`。
 
 ---
 
-## 🐳 1. Docker 環境啟動（建議首選）
+## Overview
 
-不污染主機 Python / ROS 環境。`src/` bind-mount，改 code 不用 rebuild image。
+本套件設計為自走小車決策層的視覺輸入。推論工作完全交由 Grove Vision AI V2 模組內建 NPU 執行，主控端 (Raspberry Pi) 僅負責串列讀取、JSON 解析、信心度過濾與 ROS 2 訊息發布，不佔用主機 CPU 進行影像運算。
 
-### A. PC 開發（amd64，自動 fallback Mock）
+| 項目 | 規格 |
+|---|---|
+| 感測器 | Grove Vision AI V2 (Himax WE2 NPU、SenseCraft AI 韌體) |
+| 傳輸介面 | USB-CDC (`/dev/ttyACM0`) @ 921600 baud |
+| 主控端 | Raspberry Pi 4 (Ubuntu 20.04 arm64) 或 x86_64 開發主機 |
+| ROS 2 版本 | Humble |
+| 授權 | MIT |
 
-PC 沒接 Grove V2，container 起來會 WARN 一句後自動切 Mock，持續發布虛擬路標：
+---
+
+## Features
+
+- **硬體與模擬模式介面對等**：`vision_ai_node` 連接實體模組；`mock_vision_node` 提供模擬資料供下游節點整合測試。
+- **失效自動降級**：偵測串列裝置不可用時自動切換為模擬資料來源，行為由 `fallback_to_mock` 參數控制。
+- **SSCMA 開機握手程序**：開啟 CDC 埠時關閉 DTR/RTS 以避免 Himax WE2 重置；等待韌體 `is_ready` 標記後送出 `AT+INVOKE=-1,0,0` 觸發連續推論。
+- **多種 JSON Schema 容錯**：支援 SSCMA 標準 `data.boxes`、簡化型 `boxes`、舊版 `detections` 三種格式。
+- **日誌節流**：僅於類別集合變化或連續低信心度達門檻時輸出，避免高速迴圈洗版。
+- **多架構容器映像**：單一 Dockerfile 同時支援 `linux/amd64` (PC) 與 `linux/arm64` (Pi)；實機部署透過 compose overlay 注入硬體裝置。
+
+---
+
+## Prerequisites
+
+| 元件 | 版本 | 備註 |
+|---|---|---|
+| Docker Engine | 20.10+ | 必要 |
+| Docker Compose | v2+ | 隨新版 Docker 提供 |
+| 作業系統 | Ubuntu 20.04 / 22.04 | 已測試 |
+| 硬體 (實機部署) | Raspberry Pi 4 + Grove Vision AI V2 (具資料訊號之 USB-C 線材) | PC 開發可省略 |
+
+Pi 端一次性設定 (首次部署執行)：
 
 ```bash
-cd ~/control_lab
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker,dialout "$USER"
+# 重新登入或執行 `newgrp dialout` 以使群組生效
+```
+
+---
+
+## Quick Start
+
+### 1. 取得專案
+
+```bash
+git clone https://github.com/chenbenlu/grove-vision-ai-v2-ros2.git
+cd grove-vision-ai-v2-ros2
+```
+
+### 2. 開發環境 (PC, x86_64, 自動 fallback Mock)
+
+```bash
 docker compose up --build
 ```
 
-### B. Pi 實機（arm64，接 Grove V2 USB-C）
+另開終端查看訊息：
 
 ```bash
-export DIALOUT_GID=$(getent group dialout | cut -d: -f3)   # 通常 20
+docker compose exec vision-ai \
+  bash -c "source install/setup.bash && ros2 topic echo /perception/road_signs"
+```
+
+### 3. 實機部署 (Raspberry Pi + Grove Vision AI V2)
+
+```bash
+export DIALOUT_GID=$(getent group dialout | cut -d: -f3)
 docker compose -f docker-compose.yml -f docker-compose.pi.yml up --build
 ```
 
-> **第一次** `--build` 在 Pi 上要下載 arm64 base image（約 200 MB），需要等幾分鐘。之後改 code 直接 `docker compose restart vision-ai` 即可（entrypoint 內會自動重 `colcon build`）。
+> 首次於 Pi 上 build 需下載 `linux/arm64` 基底映像 (約 200 MB)。後續修改 source 後執行 `docker compose restart vision-ai`，entrypoint 會自動進行增量 `colcon build`。
 
 ---
 
-## 🚀 2. 執行與看結果
+## Node API
 
-啟動之後 container 內就在發布訊息。從另一個 terminal 看：
+### Nodes
 
-```bash
-# 進 container 直接 echo (簡單)
-docker compose exec vision-ai bash -c \
-  "source install/setup.bash && ros2 topic echo /perception/road_signs"
-
-# 或在 host 上直接 echo（需要 host 已 source ROS 2 Humble + ROS_DOMAIN_ID 一致）
-ros2 topic echo /perception/road_signs
-```
-
-### 強制跑 Mock 節點（不要 vision_ai_node 自動 fallback 路徑）
-
-```bash
-docker compose run --rm vision-ai \
-  ros2 run vision_perception mock_vision_node
-```
-
----
-
-## 📥 3. 輸出訊息結構（開發核心！）
-
-> **請特別注意**：你的控制節點要訂閱 **`/perception/road_signs`**，解析下面格式：
-
-```
-$ ros2 interface show vision_perception/msg/VisionAI
-std_msgs/Header header
-Detection[] detections
-    uint8   class_id      # 類別索引 (對應 class_names)
-    string  class_name    # 類別名稱 (e.g. "stop", "yield")
-    float32 confidence    # 信心度 0.0 ~ 1.0
-    uint16  bbox_x        # 左上角 x (pixel)
-    uint16  bbox_y        # 左上角 y
-    uint16  bbox_w        # 寬
-    uint16  bbox_h        # 高
-```
-
-每幀一則 `VisionAI`，內含 0..N 個 `Detection`。QoS depth = 10。
-
----
-
-## ⚙️ 4. 參數設定（可自行調整）
-
-設定檔在 [`config/params.yaml`](src/vision_perception/config/params.yaml)，也可在 CLI 用 `--ros-args -p key:=value` 即時覆寫。
-
-| Key | 預設 | 說明 |
+| 節點 | 執行指令 | 角色 |
 |---|---|---|
-| `serial_port` | `/dev/ttyACM0` | Grove V2 USB-C 插上 Pi 後的虛擬序列埠 |
-| `baud_rate` | `921600` | Grove V2 出廠固定值 |
-| **`confidence_threshold`** | **`0.6`** | **辨識靈敏度**：低於這個信心度的偵測不會 publish。調低 → 更敏感但易誤判，調高 → 更可靠但易漏 |
-| `poll_rate_hz` | `20.0` | 讀取頻率（每秒幾次） |
-| `fallback_to_mock` | `true` | Serial 開不起來時自動切 Mock |
-| **`class_names`** | `[stop, yield, speed_30, speed_60]` | **類別對應表**：index 對應韌體回的 `class_id`。**部署時必須跟你的實際模型 label 順序對齊！** |
+| `vision_ai_node` | `ros2 run vision_perception vision_ai_node` | 實機讀取節點；串列裝置不可用時自動降級為 Mock |
+| `mock_vision_node` | `ros2 run vision_perception mock_vision_node` | 模擬資料節點，供下游節點開發與整合測試 |
 
-範例：暫時提高靈敏度測試：
+### Published Topics
 
-```bash
-docker compose run --rm vision-ai \
-  ros2 run vision_perception vision_ai_node --ros-args -p confidence_threshold:=0.4
+| Topic | Type | QoS | 說明 |
+|---|---|---|---|
+| `/perception/road_signs` | `vision_perception/msg/VisionAI` | RELIABLE, depth = 10 | 每幀一則訊息，內含 0..N 筆 `Detection` |
+
+### Subscribed Topics
+
+無。
+
+### Parameters
+
+預設值由節點程式碼宣告，可透過 [`config/params.yaml`](src/vision_perception/config/params.yaml) 或 `--ros-args -p key:=value` 覆寫。
+
+| 參數 | 型別 | 預設值 | 說明 |
+|---|---|---|---|
+| `serial_port` | string | `/dev/ttyACM0` | Grove Vision AI V2 透過 USB-CDC 註冊之裝置路徑 |
+| `baud_rate` | int | `921600` | UART 速率；與韌體預設值一致 |
+| `confidence_threshold` | float | `0.6` | 偵測信心度門檻；低於此值不予發布 |
+| `poll_rate_hz` | float | `20.0` | 讀取迴圈頻率 (Hz) |
+| `fallback_to_mock` | bool | `true` | 串列開啟或初始化失敗時自動切換為 Mock |
+| `class_names` | string[] | `[stop, yield, speed_30, speed_60]` | 類別索引對應表；index 即為韌體回傳之 `target_id` |
+
+### Message Schema
+
+```
+# vision_perception/msg/VisionAI
+std_msgs/Header header
+Detection[]     detections
+
+# vision_perception/msg/Detection
+uint8   class_id        # 類別索引
+string  class_name      # 類別名稱 (由 class_names 參數對應)
+float32 confidence      # 信心度 [0.0, 1.0]
+uint16  bbox_x          # bounding box 左上角 x (pixel)
+uint16  bbox_y          # bounding box 左上角 y (pixel)
+uint16  bbox_w          # 寬度
+uint16  bbox_h          # 高度
 ```
 
 ---
 
-## 🛠️ 5. 常見除錯（Troubleshooting）
+## Troubleshooting
 
-| 症狀 | 處理 |
-|---|---|
-| `Serial unavailable: could not open port /dev/ttyACM0` | Grove V2 沒接、線材沒支援資料（純供電線會中招），或裝置號被佔到 ttyACM1。`ls /dev/ttyACM*` 確認。 |
-| `PermissionError: '/dev/ttyACM0'` | 沒在 `dialout` group → `sudo usermod -aG dialout $USER` 後**登出再登入**讓 group 生效。 |
-| topic 收得到、但 `detections: []` 持續空 | 鏡頭前真的沒物體，或 `confidence_threshold` 設太高。試 `--ros-args -p confidence_threshold:=0.3` 看會不會冒出來。 |
-| `class_name` 是純數字（`'1'`, `'2'`） | `class_names` 的 index 跟韌體實際 `class_id` 對不上，parser 退而顯示 id 字串。改 `params.yaml` 的 list 順序後 restart container。 |
-| `topic echo` 報 `message type vision_perception/msg/VisionAI is invalid` | 該 terminal 沒 source `install/setup.bash`，或 host 沒 build 過套件。改用 container 內 echo：`docker compose exec vision-ai bash -c "source install/setup.bash && ros2 topic echo /perception/road_signs"` |
-| Docker 跑、host 看不到 topic | 主機跟 compose 的 `ROS_DOMAIN_ID` 不同。檢查 `echo $ROS_DOMAIN_ID`，預設 `0`。 |
+| 症狀 | 可能原因 | 解決方式 |
+|---|---|---|
+| `Serial unavailable: could not open port /dev/ttyACM0` | 裝置未列舉、USB 線缺資料訊號、或裝置編號變更為 `ttyACM1` | 執行 `ls /dev/ttyACM*` 確認；更換具資料線之 USB-C 線材 |
+| `PermissionError: '/dev/ttyACM0'` | 使用者不在 `dialout` 群組 | `sudo usermod -aG dialout $USER` 後重新登入 |
+| Topic 有訊息但 `detections: []` 持續為空 | 鏡頭視野無目標物件，或 `confidence_threshold` 設定過高 | 暫時降低門檻：`--ros-args -p confidence_threshold:=0.3` |
+| `class_name` 為純數字字串 (`'1'`、`'2'`) | `class_names` 索引未對應實際部署模型之 label 順序 | 調整 `params.yaml` 內 `class_names` 順序後重啟容器 |
+| `topic echo` 回傳 `message type ... is invalid` | 訂閱端執行環境缺少訊息型別定義 | 於該終端執行 `source install/setup.bash`；或改由容器內部使用 `docker compose exec ...` |
+| 主機端無法發現容器內 Topic | 主機與 compose 服務之 `ROS_DOMAIN_ID` 不一致 | 確保兩端 `ROS_DOMAIN_ID` 相同 (預設 `0`) |
+
+---
+
+## Repository Layout
+
+```
+.
+├── docker/
+│   ├── Dockerfile              # ros:humble-ros-base + pyserial + colcon
+│   └── entrypoint.sh           # source ROS env → colcon build → exec CMD
+├── docker-compose.yml          # 基底 (PC，無 device passthrough)
+├── docker-compose.pi.yml       # Pi 覆寫 (注入 /dev/ttyACM0 + dialout group)
+└── src/vision_perception/
+    ├── CMakeLists.txt          # hybrid ament_cmake (rosidl + Python)
+    ├── package.xml
+    ├── msg/{Detection,VisionAI}.msg
+    ├── launch/vision_perception.launch.py
+    ├── config/params.yaml
+    ├── vision_perception_nodes/    # Python module (避開 msg namespace)
+    │   ├── vision_ai_node.py
+    │   ├── mock_vision_node.py
+    │   ├── serial_reader.py
+    │   ├── _mock_source.py
+    │   └── _types.py
+    └── test/test_mock_node.py
+```
+
+---
+
+## License
+
+本套件以 MIT License 釋出，詳見 [LICENSE](LICENSE)。

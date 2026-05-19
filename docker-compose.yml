@@ -1,0 +1,24 @@
+services:
+  vision-ai:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        ROS_DISTRO: humble
+    image: control-lab/vision-perception:humble
+    container_name: vision_ai_node
+    network_mode: host
+    environment:
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+    volumes:
+      - ./src:/ros2_ws/src
+      # build/ and install/ stay in named volumes — colcon's --symlink-install
+      # produces in-container paths that would be broken symlinks on the host.
+      - vision_build:/ros2_ws/build
+      - vision_install:/ros2_ws/install
+      - ./log:/ros2_ws/log
+    restart: unless-stopped
+
+volumes:
+  vision_build:
+  vision_install:

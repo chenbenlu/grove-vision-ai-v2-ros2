@@ -1,0 +1,14 @@
+build/
+install/
+log/
+.git/
+.gitignore
+.claude/
+.vscode/
+.idea/
+**/__pycache__/
+**/*.pyc
+*.md
+LICENSE
+docker-compose*.yml
+.dockerignore

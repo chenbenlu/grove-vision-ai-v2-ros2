@@ -1,0 +1,20 @@
+vision_ai_node:
+  ros__parameters:
+    serial_port: "/dev/ttyACM0"
+    baud_rate: 921600
+    confidence_threshold: 0.6
+    poll_rate_hz: 20.0
+    fallback_to_mock: true
+    # Index = class_id reported by the Grove Vision AI V2 firmware.
+    # Edit to match the labels of the deployed model.
+    class_names:
+      - "stop"
+      - "yield"
+      - "speed_30"
+      - "speed_60"
+
+mock_vision_node:
+  ros__parameters:
+    confidence_threshold: 0.6
+    poll_rate_hz: 5.0
+    change_every_frames: 5

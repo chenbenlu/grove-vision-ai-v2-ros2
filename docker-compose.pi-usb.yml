@@ -1,0 +1,11 @@
+services:
+  vision-ai:
+    platform: linux/arm64
+    devices:
+      # Grove Vision AI V2 USB-C → Pi USB-A  (transport == "serial",
+      # serial_port == "/dev/ttyACM0", default).
+      - /dev/ttyACM0:/dev/ttyACM0
+    group_add:
+      # Set the GID before `up`:
+      #   export DIALOUT_GID=$(getent group dialout | cut -d: -f3)
+      - "${DIALOUT_GID:-20}"

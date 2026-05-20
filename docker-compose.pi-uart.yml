@@ -2,11 +2,11 @@ services:
   vision-ai:
     platform: linux/arm64
     devices:
-      # Grove Vision AI V2 USB-C → Pi USB-A  (transport == "serial", default).
-      # - /dev/ttyACM0:/dev/ttyACM0
-      # Grove V2 dedicated TX/RX → Pi GPIO 14/15  (transport == "serial" with
-      # serial_port=/dev/ttyAMA0). Requires `dtoverlay=disable-bt` so the
-      # PL011 sits on the GPIO header instead of Bluetooth.
+      # Grove Vision AI V2 dedicated TX/RX → Pi GPIO 14/15  (PL011).
+      # Use with transport == "serial", serial_port == "/dev/ttyAMA0".
+      # Requires `dtoverlay=disable-bt` in /boot/firmware/config.txt and
+      # removal of `console=serial0,115200` from /boot/firmware/cmdline.txt
+      # so the kernel console releases the UART.
       - /dev/ttyAMA0:/dev/ttyAMA0
     group_add:
       # Set the GID before `up`:

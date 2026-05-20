@@ -6,7 +6,7 @@
 ![Platform](https://img.shields.io/badge/platform-amd64%20%7C%20arm64-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-ROS 2 (Humble) 套件，將 Grove Vision AI V2 (Himax WE2 + SenseCraft AI 韌體) 取得的 SSCMA 偵測結果，解析後以 `vision_perception/msg/VisionAI` 訊息發布於 `/perception/road_signs`。支援 **USB CDC (預設)** 與 **I2C** 兩種 transport，透過 `transport` 參數切換。
+ROS 2 (Humble) 套件，將 Grove Vision AI V2 (Himax WE2 + SenseCraft AI 韌體) 取得的 SSCMA 偵測結果，解析後以 `vision_perception/msg/VisionAI` 訊息發布於 `/vision/detections`。支援 **USB CDC (預設)** 與 **I2C** 兩種 transport，透過 `transport` 參數切換；topic 與 frame_id 亦可在執行時覆寫。
 
 ---
 
@@ -17,7 +17,7 @@ ROS 2 (Humble) 套件，將 Grove Vision AI V2 (Himax WE2 + SenseCraft AI 韌體
 | 項目 | 規格 |
 |---|---|
 | 感測器 | Grove Vision AI V2 (Himax WE2 NPU、SenseCraft AI 韌體) |
-| 傳輸介面 | **USB CDC** (`/dev/ttyACM0` @ 921600, 預設) 或 **I2C** (`/dev/i2c-1`, addr `0x62`, 400 kHz, SSCMA-Micro `FEATURE_TRANSPORT` framed；需 firmware 支援) |
+| 傳輸介面 | **USB CDC** (`/dev/ttyACM0` @ 921600, 預設)、**UART pins** (`/dev/ttyAMA0` @ 921600, 需 `dtoverlay=disable-bt`)，或 **I2C** (`/dev/i2c-1`, addr `0x62`, 400 kHz, SSCMA-Micro `FEATURE_TRANSPORT` framed)。Serial 與 UART 共用同一個 `SerialVisionReader` |
 | 主控端 | Raspberry Pi 4 (Ubuntu 20.04 arm64) 或 x86_64 開發主機 |
 | ROS 2 版本 | Humble |
 | 授權 | MIT |
@@ -27,11 +27,12 @@ ROS 2 (Humble) 套件，將 Grove Vision AI V2 (Himax WE2 + SenseCraft AI 韌體
 ## Features
 
 - **即時視覺偵測**：`vision_ai_node` 連接實體 Grove Vision AI V2 模組，讀取 SSCMA JSON 偵測結果並發布 ROS 2 訊息。
-- **雙 transport 可切換**：USB CDC (PySerial @ 921600) 或 I2C (SSCMA-Micro `FEATURE_TRANSPORT` framed)，由 `transport` 參數選擇。
-- **SSCMA 開機握手程序**：USB CDC 路徑開啟 port 時關閉 DTR/RTS 防 Himax WE2 reset；等待 `is_ready` 後送出 `AT+INVOKE=-1,0,1\r` 啟動連續推論並抑制 base64 影像欄位 (~10× 頻寬節省)。
+- **三種 transport 可切換**：USB CDC、UART pins (PL011 GPIO 14/15)，或 I2C (SSCMA-Micro `FEATURE_TRANSPORT` framed)。前兩者共用 `SerialVisionReader`，僅切換 `serial_port`；第三者由 `transport=i2c` 啟動 `GroveVisionI2CReader`。三種均通過實機驗證。
+- **SSCMA 開機握手程序**：兩種 reader 皆會 drain bootloader 噪音直到 `is_ready`，再送出 `AT+INVOKE=-1,0,1\r` 啟動連續推論並抑制 base64 影像欄位 (~10× 頻寬節省)。USB CDC 額外關閉 DTR/RTS 防 Himax WE2 reset。
 - **多種 JSON Schema 容錯**：支援 SSCMA 標準 `data.boxes`、簡化型 `boxes`、舊版 `detections` 三種格式。
 - **日誌節流**：僅於類別集合變化或連續低信心度達門檻時輸出，避免高速迴圈洗版。
-- **多架構容器映像**：單一 Dockerfile 同時支援 `linux/amd64` (PC) 與 `linux/arm64` (Pi)；實機部署透過 compose overlay 注入硬體裝置。
+- **可重定向發布**：`topic` 與 `frame_id` 皆為節點參數，便於整合至既有 TF 樹與 namespace。
+- **多架構容器映像**：單一 Dockerfile 同時支援 `linux/amd64` (PC) 與 `linux/arm64` (Pi)；Pi compose overlay 同時 passthrough USB CDC 與 I2C 裝置，靠 `transport` 參數選擇實際使用的路徑。
 
 ---
 
@@ -65,7 +66,9 @@ git clone https://github.com/chenbenlu/grove-vision-ai-v2-ros2.git
 cd grove-vision-ai-v2-ros2
 ```
 
-### 2. 開發環境 (PC, x86_64, 自動 fallback Mock)
+### 2. 開發環境 (PC, x86_64)
+
+PC 端需將 Grove V2 USB-C 接到 PC USB-A，以提供 `/dev/ttyACM0`。節點不再具備 mock fallback，無實體裝置會在啟動時直接結束。
 
 ```bash
 docker compose up --build
@@ -75,23 +78,17 @@ docker compose up --build
 
 ```bash
 docker compose exec vision-ai \
-  bash -c "source install/setup.bash && ros2 topic echo /perception/road_signs"
+  bash -c "source install/setup.bash && ros2 topic echo /vision/detections"
 ```
 
 ### 3. 實機部署 (Raspberry Pi + Grove Vision AI V2)
 
-**USB CDC 路徑 (預設，相容所有 V2 firmware build)**：
+單一 Pi overlay 同時 passthrough `/dev/ttyACM0` 與 `/dev/i2c-1`；`transport` 預設為 `serial`，欲使用 I2C 請於 `config/params.yaml` 改為 `i2c` 或加上 `--ros-args -p transport:=i2c`。
 
 ```bash
 export DIALOUT_GID=$(getent group dialout | cut -d: -f3)   # 通常 20
+export I2C_GID=$(getent group i2c | cut -d: -f3)           # 通常 998
 docker compose -f docker-compose.yml -f docker-compose.pi.yml up --build
-```
-
-**I2C 路徑 (需 firmware 支援 SSCMA-Micro `FEATURE_TRANSPORT`)**：
-
-```bash
-export I2C_GID=$(getent group i2c | cut -d: -f3)
-docker compose -f docker-compose.yml -f docker-compose.pi-i2c.yml up --build
 ```
 
 > 首次於 Pi 上 build 需下載 `linux/arm64` 基底映像 (約 200 MB)。後續修改 source 後執行 `docker compose restart vision-ai`，entrypoint 會自動進行增量 `colcon build`。
@@ -123,8 +120,8 @@ docker compose -f docker-compose.yml -f docker-compose.pi-i2c.yml up --build
 | 參數 | 型別 | 預設值 | 說明 |
 |---|---|---|---|
 | `transport` | string | `serial` | Transport 選擇：`serial` (USB CDC) 或 `i2c` |
-| `serial_port` | string | `/dev/ttyACM0` | `transport=serial` 時使用 |
-| `baud_rate` | int | `921600` | USB CDC 速率 |
+| `serial_port` | string | `/dev/ttyACM0` | `transport=serial` 時使用；可改 `/dev/ttyAMA0` 走 PL011 UART pins (需 `dtoverlay=disable-bt`) |
+| `baud_rate` | int | `921600` | USB CDC 與 UART pins 同速率 |
 | `i2c_bus` | int | `1` | `transport=i2c` 時使用；Pi 4 預設 `1` (`/dev/i2c-1`) |
 | `i2c_address` | int | `0x62` | I2C slave 位址 (Grove V2 出廠固定) |
 | `topic` | string | `/vision/detections` | 發布的 topic 名稱 |
@@ -158,7 +155,7 @@ uint16  bbox_h          # 高度
 |---|---|---|
 | `Serial unavailable: could not open port /dev/ttyACM0` | USB-C 未接、線材無資料線、裝置號跳到 `ttyACM1` | `ls /dev/ttyACM*` 確認；換具資料訊號之線材 |
 | `PermissionError: '/dev/ttyACM0'` | 使用者不在 `dialout` 群組 | `sudo usermod -aG dialout $USER` 後重新登入 |
-| I2C 路徑 topic 收得到、`detections: []` 持續為空 | Firmware 沒有 SSCMA-Micro I2C transport server (典型於 2023 年中前 SenseCraft AI build) | 改用 `transport=serial` (USB CDC)，或於 SenseCraft Studio 重 flash 較新 firmware |
+| I2C 路徑 topic `detections: []` 持續為空 | Firmware I2C transport buffer 未就緒 (CMD_AVAILABLE 回 `0xFFFF`)，通常於初始化期間 | reader 已內建 0xFFFF 視為「尚未就緒」處理；如長時間持續為空請改用 `transport=serial` 比對，或對鏡頭放實際模型 label 對應之物件 |
 | `I2C unavailable: no slave at 0x62 on bus 1` | Grove V2 未供電 / Grove 線未連接 / bus 鎖死 | `i2cdetect -y 1` 確認 0x62 ACK；若空白，請 power-cycle V2 |
 | `I2C unavailable: cannot open I2C bus 1` | I2C-1 未啟用，或使用者不在 `i2c` 群組 | 確認 `/boot/firmware/config.txt` 含 `dtparam=i2c_arm=on`；`sudo usermod -aG i2c $USER` 後重新登入 |
 | Topic 有訊息但 `detections: []` 持續為空 | 鏡頭視野無目標物件，或 `confidence_threshold` 設定過高 | 暫時降低門檻：`--ros-args -p confidence_threshold:=0.3` |
@@ -176,8 +173,7 @@ uint16  bbox_h          # 高度
 │   ├── Dockerfile              # ros:humble-ros-base + pyserial + colcon
 │   └── entrypoint.sh           # source ROS env → colcon build → exec CMD
 ├── docker-compose.yml          # 基底 (PC，無 device passthrough)
-├── docker-compose.pi.yml       # Pi USB CDC 覆寫 (/dev/ttyACM0 + dialout)
-├── docker-compose.pi-i2c.yml   # Pi I2C 覆寫 (/dev/i2c-1 + i2c, transport=i2c)
+├── docker-compose.pi.yml       # Pi 覆寫 (同時 passthrough /dev/ttyACM0 + /dev/i2c-1)
 └── src/vision_perception/
     ├── CMakeLists.txt          # hybrid ament_cmake (rosidl + Python)
     ├── package.xml

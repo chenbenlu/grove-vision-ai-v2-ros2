@@ -2,9 +2,17 @@ services:
   vision-ai:
     platform: linux/arm64
     devices:
-      # Default Pi transport: Grove Vision AI V2 via USB-C.
+      # Grove Vision AI V2 USB-C → Pi USB-A (transport == "serial", default).
       - /dev/ttyACM0:/dev/ttyACM0
+      # Grove V2 dedicated TX/RX → Pi GPIO 14/15 (transport == "serial" with
+      # serial_port=/dev/ttyAMA0). Requires `dtoverlay=disable-bt` so the
+      # PL011 sits on the GPIO header instead of Bluetooth.
+      - /dev/ttyAMA0:/dev/ttyAMA0
+      # Grove 4-pin SDA/SCL → Pi GPIO 2/3 (transport == "i2c").
+      - /dev/i2c-1:/dev/i2c-1
     group_add:
-      # `dialout` is the GID owning /dev/ttyACM*. Set DIALOUT_GID before `up`:
+      # Set both GIDs before `up`:
       #   export DIALOUT_GID=$(getent group dialout | cut -d: -f3)
+      #   export I2C_GID=$(getent group i2c | cut -d: -f3)
       - "${DIALOUT_GID:-20}"
+      - "${I2C_GID:-998}"

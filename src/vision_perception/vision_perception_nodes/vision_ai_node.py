@@ -12,6 +12,10 @@ from vision_perception.msg import VisionAI
 
 from vision_perception_nodes._mock_source import MockSource
 from vision_perception_nodes._types import RawDetection, to_vision_ai_msg
+from vision_perception_nodes.i2c_reader import (
+    GroveVisionI2CReader,
+    I2CUnavailable,
+)
 from vision_perception_nodes.serial_reader import (
     SerialUnavailable,
     SerialVisionReader,
@@ -21,6 +25,9 @@ from vision_perception_nodes.serial_reader import (
 TOPIC = "/perception/road_signs"
 FRAME_ID = "vision_ai"
 LOW_CONF_STREAK_WARN = 10
+
+TRANSPORT_SERIAL = "serial"
+TRANSPORT_I2C = "i2c"
 
 
 class _Source(Protocol):
@@ -33,16 +40,18 @@ class VisionAINode(Node):
     def __init__(self) -> None:
         super().__init__("vision_ai_node")
 
+        self.declare_parameter("transport", TRANSPORT_SERIAL)
         self.declare_parameter("serial_port", "/dev/ttyACM0")
         self.declare_parameter("baud_rate", 921600)
+        self.declare_parameter("i2c_bus", 1)
+        self.declare_parameter("i2c_address", 0x62)
         self.declare_parameter("confidence_threshold", 0.6)
         self.declare_parameter("poll_rate_hz", 20.0)
         self.declare_parameter("fallback_to_mock", True)
         # class_names is a positional list; index == class_id from firmware.
         self.declare_parameter("class_names", [""])
 
-        port = str(self.get_parameter("serial_port").value)
-        baud = int(self.get_parameter("baud_rate").value)
+        transport = str(self.get_parameter("transport").value).lower()
         self._threshold = float(self.get_parameter("confidence_threshold").value)
         rate_hz = float(self.get_parameter("poll_rate_hz").value)
         fallback = bool(self.get_parameter("fallback_to_mock").value)
@@ -51,10 +60,8 @@ class VisionAINode(Node):
             idx: name for idx, name in enumerate(class_names) if name
         }
 
-        # Keep serial readline shorter than one tick so timer isn't starved.
-        read_timeout = min(0.05, 1.0 / max(rate_hz, 1.0) / 2)
         self._source = self._build_source(
-            port, baud, read_timeout, fallback, class_name_lut
+            transport, rate_hz, fallback, class_name_lut
         )
         self._publisher = self.create_publisher(VisionAI, TOPIC, 10)
         self._timer = self.create_timer(1.0 / max(rate_hz, 1.0), self._tick)
@@ -64,28 +71,46 @@ class VisionAINode(Node):
 
     def _build_source(
         self,
-        port: str,
-        baud: int,
-        read_timeout_s: float,
+        transport: str,
+        rate_hz: float,
         fallback: bool,
         class_name_lut: Dict[int, str],
     ) -> _Source:
         try:
+            if transport == TRANSPORT_I2C:
+                bus = int(self.get_parameter("i2c_bus").value)
+                address = int(self.get_parameter("i2c_address").value)
+                reader = GroveVisionI2CReader(
+                    bus=bus, address=address, class_name_lut=class_name_lut
+                )
+                self.get_logger().info(
+                    f"Connected to Grove Vision AI V2 via I2C "
+                    f"(bus {bus}, addr 0x{address:02x})"
+                )
+                return reader
+            if transport != TRANSPORT_SERIAL:
+                self.get_logger().warn(
+                    f"Unknown transport '{transport}', falling back to serial."
+                )
+            port = str(self.get_parameter("serial_port").value)
+            baud = int(self.get_parameter("baud_rate").value)
+            read_timeout = min(0.05, 1.0 / max(rate_hz, 1.0) / 2)
             reader = SerialVisionReader(
                 port=port,
                 baud_rate=baud,
-                read_timeout_s=read_timeout_s,
+                read_timeout_s=read_timeout,
                 class_name_lut=class_name_lut,
             )
             self.get_logger().info(
-                f"Connected to Grove Vision AI V2 on {port} @ {baud}"
+                f"Connected to Grove Vision AI V2 via serial ({port} @ {baud})"
             )
             return reader
-        except SerialUnavailable as exc:
+        except (SerialUnavailable, I2CUnavailable) as exc:
             if not fallback:
                 raise
             self.get_logger().warn(
-                f"Serial unavailable ({exc}); switching to mock detection source."
+                f"Transport '{transport}' unavailable ({exc}); "
+                f"switching to mock detection source."
             )
             return MockSource()
 

@@ -1,10 +1,21 @@
 vision_ai_node:
   ros__parameters:
+    # transport: "serial" (USB CDC, default) or "i2c" (requires SSCMA-Micro
+    # FEATURE_TRANSPORT-capable firmware on the Grove Vision AI V2).
+    transport: "serial"
+
+    # Serial transport (used when transport == "serial").
     serial_port: "/dev/ttyACM0"
     baud_rate: 921600
+
+    # I2C transport (used when transport == "i2c").
+    i2c_bus: 1
+    i2c_address: 0x62
+
     confidence_threshold: 0.6
     poll_rate_hz: 20.0
     fallback_to_mock: true
+
     # Index = class_id reported by the Grove Vision AI V2 firmware.
     # Edit to match the labels of the deployed model.
     class_names:

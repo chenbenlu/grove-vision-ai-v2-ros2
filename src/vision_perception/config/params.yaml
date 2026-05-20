@@ -5,6 +5,10 @@ vision_ai_node:
     transport: "serial"
 
     # Serial transport (used when transport == "serial").
+    # /dev/ttyACM0 = Grove V2 USB-C → Pi USB-A (default)
+    # /dev/ttyAMA0 = Grove V2 dedicated TX/RX → Pi GPIO 14/15 (PL011)
+    #                 Pi /boot/firmware/config.txt must contain
+    #                 `dtoverlay=disable-bt` to expose PL011 on GPIO.
     serial_port: "/dev/ttyACM0"
     baud_rate: 921600
 

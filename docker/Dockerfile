@@ -24,4 +24,4 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["ros2", "run", "vision_perception", "vision_ai_node"]
+CMD ["ros2", "launch", "vision_perception", "vision_perception.launch.py"]

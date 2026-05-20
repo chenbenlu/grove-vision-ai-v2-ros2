@@ -1,0 +1,10 @@
+services:
+  vision-ai:
+    platform: linux/arm64
+    devices:
+      # Grove V2 4-pin SDA/SCL → Pi GPIO 2/3  (transport == "i2c").
+      - /dev/i2c-1:/dev/i2c-1
+    group_add:
+      # Set the GID before `up`:
+      #   export I2C_GID=$(getent group i2c | cut -d: -f3)
+      - "${I2C_GID:-998}"

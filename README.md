@@ -32,7 +32,7 @@ ROS 2 (Humble) 套件，將 Grove Vision AI V2 (Himax WE2 + SenseCraft AI 韌體
 - **多種 JSON Schema 容錯**：支援 SSCMA 標準 `data.boxes`、簡化型 `boxes`、舊版 `detections` 三種格式。
 - **日誌節流**：僅於類別集合變化或連續低信心度達門檻時輸出，避免高速迴圈洗版。
 - **可重定向發布**：`topic` 與 `frame_id` 皆為節點參數，便於整合至既有 TF 樹與 namespace。
-- **多架構容器映像**：單一 Dockerfile 同時支援 `linux/amd64` (PC) 與 `linux/arm64` (Pi)；Pi compose overlay 同時 passthrough USB CDC 與 I2C 裝置，靠 `transport` 參數選擇實際使用的路徑。
+- **多架構容器映像**：單一 Dockerfile 同時支援 `linux/amd64` (PC) 與 `linux/arm64` (Pi)；Pi overlay 分為 `docker-compose.pi-uart.yml`（passthrough USB CDC & GPIO UART，加入 `dialout` 群組）與 `docker-compose.pi-i2c.yml`（passthrough I2C-1，加入 `i2c` 群組），依接線方式擇一疊加，靠 `transport` 參數選擇實際使用的路徑。
 
 ---
 
@@ -83,12 +83,26 @@ docker compose exec vision-ai \
 
 ### 3. 實機部署 (Raspberry Pi + Grove Vision AI V2)
 
-單一 Pi overlay 同時 passthrough `/dev/ttyACM0` 與 `/dev/i2c-1`；`transport` 預設為 `serial`，欲使用 I2C 請於 `config/params.yaml` 改為 `i2c` 或加上 `--ros-args -p transport:=i2c`。
+Pi overlay 依接線方式二擇一：
+
+| 接線 | transport 參數 | 使用的 overlay |
+|---|---|---|
+| USB-C → Pi USB-A (`/dev/ttyACM0`) | `serial` (預設) | `docker-compose.pi-uart.yml` |
+| GPIO 14/15 TX/RX (`/dev/ttyAMA0`) | `serial` + `serial_port:=/dev/ttyAMA0` | `docker-compose.pi-uart.yml` |
+| Grove 4-pin SDA/SCL (`/dev/i2c-1`) | `i2c` | `docker-compose.pi-i2c.yml` |
+
+**UART / USB CDC 模式：**
 
 ```bash
 export DIALOUT_GID=$(getent group dialout | cut -d: -f3)   # 通常 20
+docker compose -f docker-compose.yml -f docker-compose.pi-uart.yml up --build
+```
+
+**I2C 模式：**
+
+```bash
 export I2C_GID=$(getent group i2c | cut -d: -f3)           # 通常 998
-docker compose -f docker-compose.yml -f docker-compose.pi.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.pi-i2c.yml up --build
 ```
 
 > 首次於 Pi 上 build 需下載 `linux/arm64` 基底映像 (約 200 MB)。後續修改 source 後執行 `docker compose restart vision-ai`，entrypoint 會自動進行增量 `colcon build`。
@@ -172,8 +186,9 @@ uint16  bbox_h          # 高度
 ├── docker/
 │   ├── Dockerfile              # ros:humble-ros-base + pyserial + colcon
 │   └── entrypoint.sh           # source ROS env → colcon build → exec CMD
-├── docker-compose.yml          # 基底 (PC，無 device passthrough)
-├── docker-compose.pi.yml       # Pi 覆寫 (同時 passthrough /dev/ttyACM0 + /dev/i2c-1)
+├── docker-compose.yml           # 基底 (PC，無 device passthrough)
+├── docker-compose.pi-uart.yml  # Pi UART 覆寫 (passthrough ttyACM0 / ttyAMA0，dialout 群組)
+├── docker-compose.pi-i2c.yml   # Pi I2C 覆寫  (passthrough i2c-1，i2c 群組)
 └── src/vision_perception/
     ├── CMakeLists.txt          # hybrid ament_cmake (rosidl + Python)
     ├── package.xml

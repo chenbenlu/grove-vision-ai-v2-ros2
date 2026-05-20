@@ -26,8 +26,7 @@ ROS 2 (Humble) 套件，將 Grove Vision AI V2 (Himax WE2 + SenseCraft AI 韌體
 
 ## Features
 
-- **硬體與模擬模式介面對等**：`vision_ai_node` 連接實體模組；`mock_vision_node` 提供模擬資料供下游節點整合測試。
-- **失效自動降級**：偵測串列裝置不可用時自動切換為模擬資料來源，行為由 `fallback_to_mock` 參數控制。
+- **即時視覺偵測**：`vision_ai_node` 連接實體 Grove Vision AI V2 模組，讀取 SSCMA JSON 偵測結果並發布 ROS 2 訊息。
 - **雙 transport 可切換**：USB CDC (PySerial @ 921600) 或 I2C (SSCMA-Micro `FEATURE_TRANSPORT` framed)，由 `transport` 參數選擇。
 - **SSCMA 開機握手程序**：USB CDC 路徑開啟 port 時關閉 DTR/RTS 防 Himax WE2 reset；等待 `is_ready` 後送出 `AT+INVOKE=-1,0,1\r` 啟動連續推論並抑制 base64 影像欄位 (~10× 頻寬節省)。
 - **多種 JSON Schema 容錯**：支援 SSCMA 標準 `data.boxes`、簡化型 `boxes`、舊版 `detections` 三種格式。
@@ -95,8 +94,7 @@ export I2C_GID=$(getent group i2c | cut -d: -f3)
 docker compose -f docker-compose.yml -f docker-compose.pi-i2c.yml up --build
 ```
 
-> 首次於 Pi 上 build 需下載 `linux/arm64` 基底映像 (約 200 MB)。後續修改 source 後執行 `docker compose restart vision-ai`，entrypoint 會自動進行增量 `colcon build`。  
-> 並非所有 V2 firmware 都支援 I2C；2023 年中之前的 SenseCraft AI build 沒有 `AT+DFTTPT` 與 I2C transport server，I2C 上會看到 0x62 ACK 但 FEATURE_TRANSPORT 框架請求無回應。若 I2C 路徑啟動後讀不到資料，請改回 USB CDC 或升級 firmware (SenseCraft Studio)。
+> 首次於 Pi 上 build 需下載 `linux/arm64` 基底映像 (約 200 MB)。後續修改 source 後執行 `docker compose restart vision-ai`，entrypoint 會自動進行增量 `colcon build`。
 
 ---
 
@@ -106,14 +104,13 @@ docker compose -f docker-compose.yml -f docker-compose.pi-i2c.yml up --build
 
 | 節點 | 執行指令 | 角色 |
 |---|---|---|
-| `vision_ai_node` | `ros2 run vision_perception vision_ai_node` | 實機讀取節點；串列裝置不可用時自動降級為 Mock |
-| `mock_vision_node` | `ros2 run vision_perception mock_vision_node` | 模擬資料節點，供下游節點開發與整合測試 |
+| `vision_ai_node` | `ros2 run vision_perception vision_ai_node` | 實機讀取節點 |
 
 ### Published Topics
 
 | Topic | Type | QoS | 說明 |
 |---|---|---|---|
-| `/perception/road_signs` | `vision_perception/msg/VisionAI` | RELIABLE, depth = 10 | 每幀一則訊息，內含 0..N 筆 `Detection` |
+| `/vision/detections` | `vision_perception/msg/VisionAI` | RELIABLE, depth = 10 | 每幀一則訊息，內含 0..N 筆 `Detection`（topic 名稱可由參數覆寫） |
 
 ### Subscribed Topics
 
@@ -130,9 +127,10 @@ docker compose -f docker-compose.yml -f docker-compose.pi-i2c.yml up --build
 | `baud_rate` | int | `921600` | USB CDC 速率 |
 | `i2c_bus` | int | `1` | `transport=i2c` 時使用；Pi 4 預設 `1` (`/dev/i2c-1`) |
 | `i2c_address` | int | `0x62` | I2C slave 位址 (Grove V2 出廠固定) |
+| `topic` | string | `/vision/detections` | 發布的 topic 名稱 |
+| `frame_id` | string | `vision_ai` | `header.frame_id`，用於 TF 座標系對應 |
 | `confidence_threshold` | float | `0.6` | 偵測信心度門檻；低於此值不予發布 |
 | `poll_rate_hz` | float | `20.0` | 讀取迴圈頻率 (Hz) |
-| `fallback_to_mock` | bool | `true` | 串列開啟或初始化失敗時自動切換為 Mock |
 | `class_names` | string[] | `[stop, yield, speed_30, speed_60]` | 類別索引對應表；index 即為韌體回傳之 `target_id` |
 
 ### Message Schema
@@ -188,12 +186,10 @@ uint16  bbox_h          # 高度
     ├── config/params.yaml
     ├── vision_perception_nodes/    # Python module (避開 msg namespace)
     │   ├── vision_ai_node.py
-    │   ├── mock_vision_node.py
     │   ├── serial_reader.py        # USB CDC reader (SSCMA JSON over USART)
     │   ├── i2c_reader.py           # I2C reader (SSCMA-Micro FEATURE_TRANSPORT)
-    │   ├── _mock_source.py
     │   └── _types.py
-    └── test/test_mock_node.py
+    └── test/
 ```
 
 ---

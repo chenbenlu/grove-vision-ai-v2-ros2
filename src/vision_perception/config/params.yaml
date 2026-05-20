@@ -12,9 +12,11 @@ vision_ai_node:
     i2c_bus: 1
     i2c_address: 0x62
 
+    # Detection publishing.
+    topic: "/vision/detections"
+    frame_id: "vision_ai"
     confidence_threshold: 0.6
     poll_rate_hz: 20.0
-    fallback_to_mock: true
 
     # Index = class_id reported by the Grove Vision AI V2 firmware.
     # Edit to match the labels of the deployed model.
@@ -23,9 +25,3 @@ vision_ai_node:
       - "yield"
       - "speed_30"
       - "speed_60"
-
-mock_vision_node:
-  ros__parameters:
-    confidence_threshold: 0.6
-    poll_rate_hz: 5.0
-    change_every_frames: 5

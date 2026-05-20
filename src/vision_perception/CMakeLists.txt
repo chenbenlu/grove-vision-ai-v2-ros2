@@ -28,11 +28,6 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
   RENAME vision_ai_node
 )
-install(PROGRAMS
-  vision_perception_nodes/mock_vision_node.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME mock_vision_node
-)
 
 install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
@@ -55,9 +50,7 @@ if(BUILD_TESTING)
     vision_perception_nodes
     test
   )
-  ament_add_pytest_test(test_mock_node test/test_mock_node.py
-    TIMEOUT 60
-  )
+
 endif()
 
 ament_package()

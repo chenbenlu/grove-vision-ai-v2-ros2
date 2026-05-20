@@ -1,4 +1,4 @@
-"""USB serial reader for Grove Vision AI V2 (SSCMA JSON-over-CDC)."""
+"""USB CDC reader for Grove Vision AI V2 (SSCMA JSON-over-USART)."""
 
 from __future__ import annotations
 
@@ -14,9 +14,10 @@ except ImportError:  # pragma: no cover - serial is a runtime dep
 from vision_perception_nodes._types import RawDetection
 
 
-# SSCMA AT command to start continuous, unfiltered inference with no saving.
-INVOKE_CMD = b"AT+INVOKE=-1,0,0\r\n"
-# Marker emitted by firmware after boot, signalling the AT processor is up.
+# AT command: continuous inference, no diff filter, RESULT_ONLY=1
+# (the third arg suppresses the base64 image field — ~10x bandwidth saving).
+INVOKE_CMD = b"AT+INVOKE=-1,0,1\r"
+# Marker emitted by firmware after boot; signals the AT processor is up.
 READY_MARKER = "is_ready"
 
 
@@ -71,14 +72,11 @@ class SerialVisionReader:
                 continue
             if READY_MARKER in line.decode("utf-8", errors="replace"):
                 break
-        # Best-effort: send the AT command whether or not we saw is_ready.
-        # Some firmwares free-run without it; others stall until they get it.
         try:
             self._ser.write(INVOKE_CMD)
             self._ser.flush()
         except serial.SerialException:
-            # Caller will see this as a transient read failure later.
-            pass
+            pass  # caller will see transient errors later
 
     def close(self) -> None:
         """Release the serial handle."""
@@ -96,7 +94,7 @@ class SerialVisionReader:
             return None
 
         if not raw:
-            return None  # timeout, no data available this tick
+            return None
 
         try:
             text = raw.decode("utf-8", errors="replace").strip()
@@ -109,7 +107,6 @@ class SerialVisionReader:
         try:
             decoded = json.loads(text)
         except json.JSONDecodeError:
-            # boot-time debug noise or partial line — ignore.
             return None
 
         return _parse_payload(decoded, self._class_name_lut)
@@ -122,26 +119,20 @@ def _parse_payload(
     if not isinstance(decoded, dict):
         return []
 
-    # Shape A: nested data.boxes
     data = decoded.get("data")
     if isinstance(data, dict) and isinstance(data.get("boxes"), list):
         return _parse_box_list(data["boxes"], class_name_lut)
-
-    # Shape B: top-level boxes
     if isinstance(decoded.get("boxes"), list):
         return _parse_box_list(decoded["boxes"], class_name_lut)
-
-    # Shape C: top-level detections dicts
     if isinstance(decoded.get("detections"), list):
         return _parse_detection_dicts(decoded["detections"], class_name_lut)
-
     return []
 
 
 def _parse_box_list(
     boxes: list, class_name_lut: Dict[int, str]
 ) -> List[RawDetection]:
-    """SSCMA box list: [center_x, center_y, w, h, score(0-100), target_id]."""
+    """SSCMA box: [center_x, center_y, w, h, score(0-100), target_id]."""
     result: List[RawDetection] = []
     for box in boxes:
         if not isinstance(box, (list, tuple)) or len(box) < 6:
@@ -150,7 +141,6 @@ def _parse_box_list(
             cx, cy, w, h, score, target = (int(v) for v in box[:6])
         except (TypeError, ValueError):
             continue
-
         x = max(0, cx - w // 2)
         y = max(0, cy - h // 2)
         result.append(
@@ -170,7 +160,6 @@ def _parse_box_list(
 def _parse_detection_dicts(
     items: list, class_name_lut: Dict[int, str]
 ) -> List[RawDetection]:
-    """Dict-of-dict form (older sample protocol)."""
     result: List[RawDetection] = []
     for item in items:
         if not isinstance(item, dict):
@@ -183,7 +172,9 @@ def _parse_detection_dicts(
         result.append(
             RawDetection(
                 class_id=class_id,
-                class_name=str(item.get("name") or class_name_lut.get(class_id, str(class_id))),
+                class_name=str(
+                    item.get("name") or class_name_lut.get(class_id, str(class_id))
+                ),
                 confidence=confidence,
                 bbox_x=int(item.get("x", 0)),
                 bbox_y=int(item.get("y", 0)),

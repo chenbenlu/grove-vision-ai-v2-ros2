@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ROS 2 node that publishes Grove Vision AI V2 detections to /perception/road_signs."""
+"""ROS 2 node that publishes Grove Vision AI V2 detections."""
 
 from __future__ import annotations
 
@@ -10,17 +10,23 @@ from rclpy.node import Node
 
 from vision_perception.msg import VisionAI
 
-from vision_perception_nodes._mock_source import MockSource
 from vision_perception_nodes._types import RawDetection, to_vision_ai_msg
+from vision_perception_nodes.i2c_reader import (
+    GroveVisionI2CReader,
+    I2CUnavailable,
+)
 from vision_perception_nodes.serial_reader import (
     SerialUnavailable,
     SerialVisionReader,
 )
 
 
-TOPIC = "/perception/road_signs"
-FRAME_ID = "vision_ai"
+DEFAULT_TOPIC = "/vision/detections"
+DEFAULT_FRAME_ID = "vision_ai"
 LOW_CONF_STREAK_WARN = 10
+
+TRANSPORT_SERIAL = "serial"
+TRANSPORT_I2C = "i2c"
 
 
 class _Source(Protocol):
@@ -33,30 +39,32 @@ class VisionAINode(Node):
     def __init__(self) -> None:
         super().__init__("vision_ai_node")
 
+        self.declare_parameter("transport", TRANSPORT_SERIAL)
         self.declare_parameter("serial_port", "/dev/ttyACM0")
         self.declare_parameter("baud_rate", 921600)
+        self.declare_parameter("i2c_bus", 1)
+        self.declare_parameter("i2c_address", 0x62)
         self.declare_parameter("confidence_threshold", 0.6)
         self.declare_parameter("poll_rate_hz", 20.0)
-        self.declare_parameter("fallback_to_mock", True)
+        self.declare_parameter("topic", DEFAULT_TOPIC)
+        self.declare_parameter("frame_id", DEFAULT_FRAME_ID)
         # class_names is a positional list; index == class_id from firmware.
         self.declare_parameter("class_names", [""])
 
-        port = str(self.get_parameter("serial_port").value)
-        baud = int(self.get_parameter("baud_rate").value)
+        transport = str(self.get_parameter("transport").value).lower()
         self._threshold = float(self.get_parameter("confidence_threshold").value)
         rate_hz = float(self.get_parameter("poll_rate_hz").value)
-        fallback = bool(self.get_parameter("fallback_to_mock").value)
+        topic = str(self.get_parameter("topic").value)
+        self._frame_id = str(self.get_parameter("frame_id").value)
         class_names = list(self.get_parameter("class_names").value or [])
         class_name_lut = {
             idx: name for idx, name in enumerate(class_names) if name
         }
 
-        # Keep serial readline shorter than one tick so timer isn't starved.
-        read_timeout = min(0.05, 1.0 / max(rate_hz, 1.0) / 2)
         self._source = self._build_source(
-            port, baud, read_timeout, fallback, class_name_lut
+            transport, rate_hz, class_name_lut
         )
-        self._publisher = self.create_publisher(VisionAI, TOPIC, 10)
+        self._publisher = self.create_publisher(VisionAI, topic, 10)
         self._timer = self.create_timer(1.0 / max(rate_hz, 1.0), self._tick)
 
         self._last_class_ids: Tuple[int, ...] = ()
@@ -64,30 +72,38 @@ class VisionAINode(Node):
 
     def _build_source(
         self,
-        port: str,
-        baud: int,
-        read_timeout_s: float,
-        fallback: bool,
+        transport: str,
+        rate_hz: float,
         class_name_lut: Dict[int, str],
     ) -> _Source:
-        try:
-            reader = SerialVisionReader(
-                port=port,
-                baud_rate=baud,
-                read_timeout_s=read_timeout_s,
-                class_name_lut=class_name_lut,
+        if transport == TRANSPORT_I2C:
+            bus = int(self.get_parameter("i2c_bus").value)
+            address = int(self.get_parameter("i2c_address").value)
+            reader = GroveVisionI2CReader(
+                bus=bus, address=address, class_name_lut=class_name_lut
             )
             self.get_logger().info(
-                f"Connected to Grove Vision AI V2 on {port} @ {baud}"
+                f"Connected to Grove Vision AI V2 via I2C "
+                f"(bus {bus}, addr 0x{address:02x})"
             )
             return reader
-        except SerialUnavailable as exc:
-            if not fallback:
-                raise
+        if transport != TRANSPORT_SERIAL:
             self.get_logger().warn(
-                f"Serial unavailable ({exc}); switching to mock detection source."
+                f"Unknown transport '{transport}', falling back to serial."
             )
-            return MockSource()
+        port = str(self.get_parameter("serial_port").value)
+        baud = int(self.get_parameter("baud_rate").value)
+        read_timeout = min(0.05, 1.0 / max(rate_hz, 1.0) / 2)
+        reader = SerialVisionReader(
+            port=port,
+            baud_rate=baud,
+            read_timeout_s=read_timeout,
+            class_name_lut=class_name_lut,
+        )
+        self.get_logger().info(
+            f"Connected to Grove Vision AI V2 via serial ({port} @ {baud})"
+        )
+        return reader
 
     def _tick(self) -> None:
         raw = self._source.read_detections()
@@ -103,7 +119,7 @@ class VisionAINode(Node):
                 rejected_low_conf = True
 
         self._publisher.publish(
-            to_vision_ai_msg(accepted, FRAME_ID, self.get_clock().now().to_msg())
+            to_vision_ai_msg(accepted, self._frame_id, self.get_clock().now().to_msg())
         )
         self._maybe_log(accepted, rejected_low_conf)
 
@@ -113,13 +129,13 @@ class VisionAINode(Node):
         class_ids = tuple(sorted(d.class_id for d in accepted))
         if class_ids and class_ids != self._last_class_ids:
             names = ", ".join(f"{d.class_name}({d.confidence:.2f})" for d in accepted)
-            self.get_logger().info(f"New road sign(s): {names}")
+            self.get_logger().info(f"New detection(s): {names}")
             self._last_class_ids = class_ids
             self._low_conf_streak = 0
             return
 
         if not accepted and self._last_class_ids:
-            self.get_logger().info("Road sign cleared")
+            self.get_logger().info("Detection cleared")
             self._last_class_ids = ()
             self._low_conf_streak = 0
             return

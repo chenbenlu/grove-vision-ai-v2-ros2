@@ -11,8 +11,12 @@ RUN apt-get update \
       python3-colcon-common-extensions \
       python3-pip \
       python3-serial \
+      python3-smbus \
+      i2c-tools \
       build-essential \
  && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir smbus2
 
 WORKDIR /ros2_ws
 

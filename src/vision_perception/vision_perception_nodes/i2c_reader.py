@@ -119,7 +119,12 @@ class GroveVisionI2CReader:
     def _pump_into_buffer(self) -> None:
         """Move all pending bytes from the slave into the internal buffer."""
         available = self._available()
-        while available > 0:
+        # 0xFFFF means "buffer not ready / nothing queued" (default slave
+        # state before any AT command, or while the slave is still preparing
+        # the next response). Treat that — and anything close to it — as 0.
+        if available == 0 or available >= 0xFF00:
+            return
+        while 0 < available < 0xFF00:
             chunk = min(available, MAX_PL_LEN)
             self._buffer.extend(self._frame_read(chunk))
             if len(self._buffer) > READ_BUFFER_LIMIT:

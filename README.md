@@ -30,11 +30,20 @@ ROS 2 (Humble) 套件：將 Grove Vision AI V2 (Himax WE2 + SenseCraft AI) 的 S
 | 作業系統 | Ubuntu 20.04 / 22.04 |
 | 硬體 (實機) | Raspberry Pi 4 + Grove Vision AI V2 |
 
-Pi 端一次性設定：
+Pi 端一次性設定（`get.docker.com` 一鍵腳本在 Ubuntu 20.04/Focal 會卡在 `docker-model-plugin`，故走官方 apt repo 手動步驟）：
 
 ```bash
-curl -fsSL https://get.docker.com | sudo sh
-sudo apt-get install -y i2c-tools
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg i2c-tools
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+    https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+    | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io \
+    docker-buildx-plugin docker-compose-plugin
 sudo usermod -aG docker,dialout,i2c "$USER"   # 重新登入或 newgrp 生效
 ```
 
